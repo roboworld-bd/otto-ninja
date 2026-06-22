@@ -67,7 +67,7 @@ Servo rightLeg;
 // CALIBRATION
 // ================================================================
 const int LA0 = 65;
-const int RA0 = 105;
+const int RA0 = 100;
 
 const int RI  = 70;
 const int WI  = 35;
@@ -82,6 +82,52 @@ const int LFFWRS = 20;
 const int RFFWRS = 20;
 const int LFBWRS = 20;
 const int RFBWRS = 20;
+
+
+// ================================================================
+// FOOT SERVO SPEED LIMIT
+// Continuous-rotation foot servos draw more current and run hotter
+// the further their write value sits from the stop point (90).
+// FOOT_SPEED_LIMIT caps that deviation so no command — from any
+// mode (walk, roll, explore, circle) — can push a foot servo past
+// a safe sustained speed, even during long (10+ min) run sessions.
+// Lower this further if you still want things gentler; it scales
+// every foot-driven movement in the firmware (walk drive, rolling,
+// the post-obstacle turn, circle spin, roll-mode joystick).
+// ================================================================
+const int FOOT_SPEED_LIMIT = 25;
+const int FOOT_WRITE_MIN   = FOOT_STOP_L - FOOT_SPEED_LIMIT;
+const int FOOT_WRITE_MAX   = FOOT_STOP_L + FOOT_SPEED_LIMIT;
+
+int safeFootWrite(int v)
+{
+  return constrain(v, FOOT_WRITE_MIN, FOOT_WRITE_MAX);
+}
+
+
+// ================================================================
+// LEG SERVO EASING
+// Leg (position) servos used to jump straight to their target angle
+// — e.g. standing-to-rolling and rolling-to-standing snapped in one
+// step. easeLegsTo() ramps both leg servos to a target over a fixed
+// duration instead, so transitions are gradual rather than a full
+// speed slam on the gears. Used for one-shot transitions (mode
+// switches, explore start/stop). Do NOT call this from a path that
+// runs every loop() iteration (e.g. idle/hold states) — it blocks.
+// ================================================================
+const int LEG_EASE_MS = 200;
+
+void easeLegsTo(int targetL, int targetR)
+{
+  int startL = leftLeg.read();
+  int startR = rightLeg.read();
+  const int steps = 15;
+  for (int i = 1; i <= steps; i++) {
+    leftLeg.write(map(i, 0, steps, startL, targetL));
+    rightLeg.write(map(i, 0, steps, startR, targetR));
+    delay(LEG_EASE_MS / steps);
+  }
+}
 
 
 // ================================================================
@@ -102,6 +148,15 @@ const int RFBWRS = 20;
 
 #define CIRCLE_DURATION_MS    4000
 #define CIRCLE_FOOT_SPEED       20
+
+// Walk gait cadence — how fast steps happen in Walk mode.
+// Raise these further to slow walking down even more; lower them
+// to speed it back up. All four scale together in walkForward()
+// and walkBackward() (was 250/150/200/300 — felt fast/rushed).
+#define WALK_TILT_MS    400   // time to tilt one leg into swing position
+#define WALK_OVERLAP_MS 220   // how early the next leg starts moving
+#define WALK_DRIVE_MS   300   // foot drive pulse duration
+#define WALK_RETURN_MS  450   // time to ease legs back to neutral
 
 
 // ================================================================
@@ -527,10 +582,10 @@ void walkForward()
 {
   feetAttach();
 
-  const int Interval     = 250;   // time to tilt one leg
-  const int Overlap      = 150;   // how early the next leg starts moving
-  const int Drive        = 200;   // foot drive pulse duration
-  const int ReturnTime   = 300;   // time to ease legs back to neutral (prevents jump)
+  const int Interval     = WALK_TILT_MS;     // time to tilt one leg
+  const int Overlap      = WALK_OVERLAP_MS;  // how early the next leg starts moving
+  const int Drive        = WALK_DRIVE_MS;    // foot drive pulse duration
+  const int ReturnTime   = WALK_RETURN_MS;   // time to ease legs back to neutral (prevents jump)
   const int FullCycle    = (Interval*2) + Drive + ReturnTime +
                            (Interval*2) + Drive + ReturnTime;
 
@@ -565,7 +620,7 @@ void walkForward()
     rightLeg.write(map(e, P1 - Overlap, P2, RA0, RATR));
   }
   if (e > P2 && e <= P3) {
-    rightFoot.write(FOOT_STOP_R - RFFWRS);
+    rightFoot.write(safeFootWrite(FOOT_STOP_R - RFFWRS));
   }
   // Ease both legs back to neutral over ReturnTime — no snap
   if (e > P3 && e <= P4) {
@@ -585,7 +640,7 @@ void walkForward()
     leftLeg.write(map(e, P5 - Overlap, P6, LA0, LATL));
   }
   if (e > P6 && e <= P7) {
-    leftFoot.write(FOOT_STOP_L + LFFWRS);
+    leftFoot.write(safeFootWrite(FOOT_STOP_L + LFFWRS));
   }
   // Ease both legs back to neutral over remaining time — no snap
   if (e > P7 && e <= FullCycle) {
@@ -607,10 +662,10 @@ void walkBackward()
 {
   feetAttach();
 
-  const int Interval   = 250;
-  const int Overlap    = 150;
-  const int Drive      = 200;
-  const int ReturnTime = 300;
+  const int Interval   = WALK_TILT_MS;
+  const int Overlap    = WALK_OVERLAP_MS;
+  const int Drive      = WALK_DRIVE_MS;
+  const int ReturnTime = WALK_RETURN_MS;
   const int FullCycle  = (Interval*2) + Drive + ReturnTime +
                          (Interval*2) + Drive + ReturnTime;
 
@@ -637,7 +692,7 @@ void walkBackward()
     rightLeg.write(map(e, P1 - Overlap, P2, RA0, RATR));
   }
   if (e > P2 && e <= P3) {
-    rightFoot.write(FOOT_STOP_R + RFBWRS);   // reversed: + instead of -
+    rightFoot.write(safeFootWrite(FOOT_STOP_R + RFBWRS));   // reversed: + instead of -
   }
   if (e > P3 && e <= P4) {
     rightFoot.write(FOOT_STOP_R);
@@ -657,7 +712,7 @@ void walkBackward()
     leftLeg.write(map(e, P5 - Overlap, P6, LA0, LATL));
   }
   if (e > P6 && e <= P7) {
-    leftFoot.write(FOOT_STOP_L - LFBWRS);    // reversed: - instead of +
+    leftFoot.write(safeFootWrite(FOOT_STOP_L - LFBWRS));    // reversed: - instead of +
   }
   if (e > P7 && e <= FullCycle) {
     leftFoot.write(FOOT_STOP_L);
@@ -742,8 +797,6 @@ void loop()
     seqPhase      = 1;
     seqPhaseStart = millis();
     Serial.println(">>> EXPLORE started");
-    leftLeg.write(LA1);
-    rightLeg.write(RA1);
     feetStop();
   }
 
@@ -757,7 +810,9 @@ void loop()
 
     if (seqPhase == 1)
     {
-      leftLeg.write(LA1); rightLeg.write(RA1);
+      unsigned long t = constrain(elapsed, 0, (unsigned long)EXPLORE_ROLL_ENTRY_MS);
+      leftLeg.write(map(t, 0, EXPLORE_ROLL_ENTRY_MS, LA0, LA1));
+      rightLeg.write(map(t, 0, EXPLORE_ROLL_ENTRY_MS, RA0, RA1));
       if (elapsed >= EXPLORE_ROLL_ENTRY_MS) {
         seqPhase = 2; seqPhaseStart = millis();
         Serial.println(">>> Rolling forward");
@@ -767,8 +822,8 @@ void loop()
     {
       leftLeg.write(LA1); rightLeg.write(RA1);
       feetAttach();
-      leftFoot.write(FOOT_STOP_L + ROLL_FWD_SPEED);
-      rightFoot.write(FOOT_STOP_R - ROLL_FWD_SPEED);
+      leftFoot.write(safeFootWrite(FOOT_STOP_L + ROLL_FWD_SPEED));
+      rightFoot.write(safeFootWrite(FOOT_STOP_R - ROLL_FWD_SPEED));
 
       if (clearingAfterTurn && (millis() - clearStart >= EXPLORE_CLEAR_MS))
         clearingAfterTurn = false;
@@ -783,7 +838,7 @@ void loop()
       }
 
       if (buttonEdge) {
-        feetStop(); delay(300); standNeutral();
+        feetStop(); easeLegsTo(LA0, RA0);
         seqActive = false; seqPhase = 0; clearingAfterTurn = false;
         Serial.println(">>> EXPLORE stopped");
         return;
@@ -793,8 +848,8 @@ void loop()
     {
       leftLeg.write(LA1); rightLeg.write(RA1);
       feetAttach();
-      leftFoot.write(ROLL_TURN_ANGLE);
-      rightFoot.write(ROLL_TURN_ANGLE);
+      leftFoot.write(safeFootWrite(ROLL_TURN_ANGLE));
+      rightFoot.write(safeFootWrite(ROLL_TURN_ANGLE));
 
       if (elapsed >= EXPLORE_TURN_MS) {
         feetStop(); delay(150);
@@ -804,7 +859,7 @@ void loop()
       }
 
       if (buttonEdge) {
-        feetStop(); delay(300); standNeutral();
+        feetStop(); easeLegsTo(LA0, RA0);
         seqActive = false; seqPhase = 0; clearingAfterTurn = false;
         return;
       }
@@ -839,8 +894,9 @@ void loop()
     {
       // Phase 1: shift weight onto left leg, right leg lifts off ground
       if (rxPhase == 1) {
-        leftLeg.write(LA0 + WI);
-        rightLeg.write(RA0 + WSI);
+        unsigned long t = constrain(elapsed, 0, (unsigned long)WAVE_TILT_MS);
+        leftLeg.write(map(t, 0, WAVE_TILT_MS, LA0, LA0 + WI));
+        rightLeg.write(map(t, 0, WAVE_TILT_MS, RA0, RA0 + WSI));
         feetStop();
         if (elapsed >= WAVE_TILT_MS) { rxPhase=2; rxPhaseStart=millis(); }
       }
@@ -863,8 +919,9 @@ void loop()
       // Phase 4: return to neutral
       else if (rxPhase == 4) {
         feetStop();
-        leftLeg.write(LA0);
-        rightLeg.write(RA0);
+        unsigned long t = constrain(elapsed, 0, 700UL);
+        leftLeg.write(map(t, 0, 700, LA0 + WI, LA0));
+        rightLeg.write(map(t, 0, 700, 130, RA0));   // 130 = last "wave down" angle
         if (elapsed >= 700) {
           rxActionActive=false; rxPhase=0; rxWaveCount=0;
           Serial.println(">>> WAVE done");
@@ -875,14 +932,20 @@ void loop()
     else if (rxActionType == 2)  // CIRCLE
     {
       if (rxPhase == 1) {
-        rightLeg.write(RA0 + WSI); delay(40); leftLeg.write(LA0 + WI);
+        const unsigned long CIRCLE_ENTRY_MS = 300;
+        unsigned long t = constrain(elapsed, 0, CIRCLE_ENTRY_MS);
+        rightLeg.write(map(t, 0, CIRCLE_ENTRY_MS, RA0, RA0 + WSI));
+        leftLeg.write(map(t, 0, CIRCLE_ENTRY_MS, LA0, LA0 + WI));
         feetAttach();
-        leftFoot.write(FOOT_STOP_L + CIRCLE_FOOT_SPEED);
+        leftFoot.write(safeFootWrite(FOOT_STOP_L + CIRCLE_FOOT_SPEED));
         rightFoot.write(FOOT_STOP_R);
         if (elapsed >= CIRCLE_DURATION_MS) { rxPhase=2; rxPhaseStart=millis(); Serial.println(">>> CIRCLE returning"); }
       }
       else if (rxPhase == 2) {
-        standNeutral();
+        feetStop();
+        unsigned long t = constrain(elapsed, 0, 600UL);
+        leftLeg.write(map(t, 0, 600, LA0 + WI, LA0));
+        rightLeg.write(map(t, 0, 600, RA0 + WSI, RA0));
         if (elapsed >= 600) { rxActionActive=false; rxPhase=0; Serial.println(">>> CIRCLE done"); }
       }
     }
@@ -897,14 +960,15 @@ void loop()
   if (btnXPressed)
   {
     ModeCounter = 1;
-    leftLeg.write(LA1); rightLeg.write(RA1);
     feetStop();
+    easeLegsTo(LA1, RA1);
     Serial.println(">>> ROLL mode");
   }
   if (btnYPressed)
   {
     ModeCounter = 0;
-    standNeutral();
+    feetStop();
+    easeLegsTo(LA0, RA0);
     Serial.println(">>> WALK mode");
   }
 
@@ -930,9 +994,12 @@ void loop()
     feetAttach();
     int LWS = map(J_y, 100, -100, FOOT_STOP_L+45, FOOT_STOP_L-45);
     int RWS = map(J_y, 100, -100, FOOT_STOP_R-45, FOOT_STOP_R+45);
-    int LWD = map(J_x, 100, -100,  45,  0);
-    int RWD = map(J_x, 100, -100,   0,-45);
-    leftFoot.write(LWS + LWD);
-    rightFoot.write(RWS + RWD);
+    // Turn bias — zero when the stick is centered (J_x = 0), so it no longer
+    // skews forward vs backward speed. The old map() ranges (45→0 and 0→-45)
+    // gave a +22.5 / -22.5 bias even at center, which is what made forward
+    // rolling faster than backward rolling.
+    int turnBias = map(J_x, -100, 100, -22, 22);
+    leftFoot.write(safeFootWrite(LWS + turnBias));
+    rightFoot.write(safeFootWrite(RWS + turnBias));
   }
 }
