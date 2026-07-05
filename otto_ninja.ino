@@ -66,10 +66,10 @@ Servo rightLeg;
 // ================================================================
 // CALIBRATION
 // ================================================================
-const int LA0 = 65;
-const int RA0 = 100;
+const int LA0 = 77;
+const int RA0 = 95;
 
-const int RI  = 70;
+const int RI  = 85;
 const int WI  = 35;
 const int WSI = 60;
 
@@ -153,10 +153,25 @@ void easeLegsTo(int targetL, int targetR)
 // Raise these further to slow walking down even more; lower them
 // to speed it back up. All four scale together in walkForward()
 // and walkBackward() (was 250/150/200/300 — felt fast/rushed).
-#define WALK_TILT_MS    400   // time to tilt one leg into swing position
-#define WALK_OVERLAP_MS 220   // how early the next leg starts moving
-#define WALK_DRIVE_MS   300   // foot drive pulse duration
-#define WALK_RETURN_MS  450   // time to ease legs back to neutral
+#define WALK_TILT_MS    500   // time to tilt one leg into swing position
+#define WALK_OVERLAP_MS 10   // how early the next leg starts moving
+// Foot drive pulse duration — split per leg since the left and right
+// foot drives sometimes need different timing (e.g. servo mismatch,
+// asymmetric torque/speed).
+#define WALK_DRIVE_MS_L 300   // left foot drive pulse duration
+#define WALK_DRIVE_MS_R 300   // right foot drive pulse duration
+#define WALK_RETURN_MS  500   // time to ease legs back to neutral
+
+// The foot-drive push used to jump straight from stop to full speed
+// the instant the drive phase started — that instant full-torque
+// step is what causes the harsh "clunk" sound on the first push.
+// WALK_DRIVE_RAMP_MS ramps the foot speed smoothly from stop up to
+// full drive speed over this many ms at the start of each drive
+// phase (same soft-start feel as the transform/roll speed), then
+// holds full speed for the rest of the push. Keep it well under
+// WALK_DRIVE_MS_L / WALK_DRIVE_MS_R. Raise it for a gentler/slower
+// ramp, lower it for a snappier push.
+#define WALK_DRIVE_RAMP_MS 120
 
 
 // ================================================================
@@ -584,10 +599,11 @@ void walkForward()
 
   const int Interval     = WALK_TILT_MS;     // time to tilt one leg
   const int Overlap      = WALK_OVERLAP_MS;  // how early the next leg starts moving
-  const int Drive        = WALK_DRIVE_MS;    // foot drive pulse duration
+  const int DriveR       = WALK_DRIVE_MS_R;  // right foot drive pulse duration
+  const int DriveL       = WALK_DRIVE_MS_L;  // left foot drive pulse duration
   const int ReturnTime   = WALK_RETURN_MS;   // time to ease legs back to neutral (prevents jump)
-  const int FullCycle    = (Interval*2) + Drive + ReturnTime +
-                           (Interval*2) + Drive + ReturnTime;
+  const int FullCycle    = (Interval*2) + DriveR + ReturnTime +
+                           (Interval*2) + DriveL + ReturnTime;
 
   if (millis() > walkCycleStart + FullCycle) walkCycleStart = millis();
   long e = millis() - walkCycleStart;
@@ -600,17 +616,22 @@ void walkForward()
 
   const long P1 = Interval;
   const long P2 = P1 + Interval;
-  const long P3 = P2 + Drive;
+  const long P3 = P2 + DriveR;
   const long P4 = P3 + ReturnTime;
 
   // ── Half 2: left foot drives ──────────────────────────────────
   const long P5 = P4 + Interval;
   const long P6 = P5 + Interval;
-  const long P7 = P6 + Drive;
+  const long P7 = P6 + DriveL;
   // P7 → FullCycle: ease back to neutral
 
+  // Ease into the tilt over Interval — was an instant leftLeg.write(LATR)
+  // jump, which snapped the leg servo to full deflection the instant the
+  // phase started (same kind of hard-torque snap that easeLegsTo() avoids
+  // during transform). Ramping it here removes that jolt before the foot
+  // ever starts driving.
   if (e <= P1) {
-    leftLeg.write(LATR);
+    leftLeg.write(map(e, 0, P1, LA0, LATR));
     rightLeg.write(RA0);
     leftFoot.write(FOOT_STOP_L);
     rightFoot.write(FOOT_STOP_R);
@@ -620,7 +641,12 @@ void walkForward()
     rightLeg.write(map(e, P1 - Overlap, P2, RA0, RATR));
   }
   if (e > P2 && e <= P3) {
-    rightFoot.write(safeFootWrite(FOOT_STOP_R - RFFWRS));
+    long rampEnd = min((long)(P2 + WALK_DRIVE_RAMP_MS), P3);
+    if (e <= rampEnd) {
+      rightFoot.write(safeFootWrite(map(e, P2, rampEnd, FOOT_STOP_R, FOOT_STOP_R - RFFWRS)));
+    } else {
+      rightFoot.write(safeFootWrite(FOOT_STOP_R - RFFWRS));
+    }
   }
   // Ease both legs back to neutral over ReturnTime — no snap
   if (e > P3 && e <= P4) {
@@ -629,8 +655,10 @@ void walkForward()
     rightLeg.write(map(e, P3, P4, RATR, RA0));
   }
 
+  // Same fix mirrored for the second half — rightLeg was snapping to
+  // RATL instantly instead of easing into the tilt.
   if (e > P4 && e <= P5) {
-    rightLeg.write(RATL);
+    rightLeg.write(map(e, P4, P5, RA0, RATL));
     leftLeg.write(LA0);
     leftFoot.write(FOOT_STOP_L);
     rightFoot.write(FOOT_STOP_R);
@@ -640,7 +668,12 @@ void walkForward()
     leftLeg.write(map(e, P5 - Overlap, P6, LA0, LATL));
   }
   if (e > P6 && e <= P7) {
-    leftFoot.write(safeFootWrite(FOOT_STOP_L + LFFWRS));
+    long rampEnd = min((long)(P6 + WALK_DRIVE_RAMP_MS), P7);
+    if (e <= rampEnd) {
+      leftFoot.write(safeFootWrite(map(e, P6, rampEnd, FOOT_STOP_L, FOOT_STOP_L + LFFWRS)));
+    } else {
+      leftFoot.write(safeFootWrite(FOOT_STOP_L + LFFWRS));
+    }
   }
   // Ease both legs back to neutral over remaining time — no snap
   if (e > P7 && e <= FullCycle) {
@@ -664,25 +697,26 @@ void walkBackward()
 
   const int Interval   = WALK_TILT_MS;
   const int Overlap    = WALK_OVERLAP_MS;
-  const int Drive      = WALK_DRIVE_MS;
+  const int DriveR     = WALK_DRIVE_MS_R;
+  const int DriveL     = WALK_DRIVE_MS_L;
   const int ReturnTime = WALK_RETURN_MS;
-  const int FullCycle  = (Interval*2) + Drive + ReturnTime +
-                         (Interval*2) + Drive + ReturnTime;
+  const int FullCycle  = (Interval*2) + DriveR + ReturnTime +
+                         (Interval*2) + DriveL + ReturnTime;
 
   if (millis() > walkCycleStart + FullCycle) walkCycleStart = millis();
   long e = millis() - walkCycleStart;
 
   const long P1 = Interval;
   const long P2 = P1 + Interval;
-  const long P3 = P2 + Drive;
+  const long P3 = P2 + DriveR;
   const long P4 = P3 + ReturnTime;
   const long P5 = P4 + Interval;
   const long P6 = P5 + Interval;
-  const long P7 = P6 + Drive;
+  const long P7 = P6 + DriveL;
 
   // Half 1: right foot drives backward
   if (e <= P1) {
-    leftLeg.write(LATR);
+    leftLeg.write(map(e, 0, P1, LA0, LATR));
     rightLeg.write(RA0);
     leftFoot.write(FOOT_STOP_L);
     rightFoot.write(FOOT_STOP_R);
@@ -692,7 +726,12 @@ void walkBackward()
     rightLeg.write(map(e, P1 - Overlap, P2, RA0, RATR));
   }
   if (e > P2 && e <= P3) {
-    rightFoot.write(safeFootWrite(FOOT_STOP_R + RFBWRS));   // reversed: + instead of -
+    long rampEnd = min((long)(P2 + WALK_DRIVE_RAMP_MS), P3);
+    if (e <= rampEnd) {
+      rightFoot.write(safeFootWrite(map(e, P2, rampEnd, FOOT_STOP_R, FOOT_STOP_R + RFBWRS)));  // reversed: + instead of -
+    } else {
+      rightFoot.write(safeFootWrite(FOOT_STOP_R + RFBWRS));   // reversed: + instead of -
+    }
   }
   if (e > P3 && e <= P4) {
     rightFoot.write(FOOT_STOP_R);
@@ -702,7 +741,7 @@ void walkBackward()
 
   // Half 2: left foot drives backward
   if (e > P4 && e <= P5) {
-    rightLeg.write(RATL);
+    rightLeg.write(map(e, P4, P5, RA0, RATL));
     leftLeg.write(LA0);
     leftFoot.write(FOOT_STOP_L);
     rightFoot.write(FOOT_STOP_R);
@@ -712,7 +751,12 @@ void walkBackward()
     leftLeg.write(map(e, P5 - Overlap, P6, LA0, LATL));
   }
   if (e > P6 && e <= P7) {
-    leftFoot.write(safeFootWrite(FOOT_STOP_L - LFBWRS));    // reversed: - instead of +
+    long rampEnd = min((long)(P6 + WALK_DRIVE_RAMP_MS), P7);
+    if (e <= rampEnd) {
+      leftFoot.write(safeFootWrite(map(e, P6, rampEnd, FOOT_STOP_L, FOOT_STOP_L - LFBWRS)));   // reversed: - instead of +
+    } else {
+      leftFoot.write(safeFootWrite(FOOT_STOP_L - LFBWRS));    // reversed: - instead of +
+    }
   }
   if (e > P7 && e <= FullCycle) {
     leftFoot.write(FOOT_STOP_L);
