@@ -66,8 +66,8 @@ Servo rightLeg;
 // ================================================================
 // CALIBRATION
 // ================================================================
-const int LA0 = 77;
-const int RA0 = 95;
+const int LA0 = 87;
+const int RA0 = 100;
 
 const int RI  = 85;
 const int WI  = 35;
@@ -159,7 +159,7 @@ void easeLegsTo(int targetL, int targetR)
 // foot drives sometimes need different timing (e.g. servo mismatch,
 // asymmetric torque/speed).
 #define WALK_DRIVE_MS_L 300   // left foot drive pulse duration
-#define WALK_DRIVE_MS_R 300   // right foot drive pulse duration
+#define WALK_DRIVE_MS_R 250   // right foot drive pulse duration
 #define WALK_RETURN_MS  500   // time to ease legs back to neutral
 
 // The foot-drive push used to jump straight from stop to full speed
@@ -177,27 +177,65 @@ void easeLegsTo(int targetL, int targetR)
 // ================================================================
 // FOOT SERVO HELPERS
 // ================================================================
-bool feetAttached = false;
+// Per-foot attach state (instead of one shared flag) so each foot can be
+// attached/detached independently — this lets the walking gait attach a
+// foot only for its own drive window (WALK_DRIVE_MS_L / WALK_DRIVE_MS_R)
+// instead of leaving both feet powered for the whole gait cycle.
+bool rightFootAttached = false;
+bool leftFootAttached  = false;
 
+void rightFootOn()
+{
+  if (!rightFootAttached) {
+    rightFoot.attach(SERVO_RIGHT_FOOT_PIN, 544, 2400);
+    rightFootAttached = true;
+  }
+}
+
+void rightFootOff()
+{
+  if (rightFootAttached) {
+    rightFoot.write(FOOT_STOP_R);
+    rightFoot.detach();
+    rightFootAttached = false;
+  }
+}
+
+void leftFootOn()
+{
+  if (!leftFootAttached) {
+    leftFoot.attach(SERVO_LEFT_FOOT_PIN, 544, 2400);
+    leftFootAttached = true;
+  }
+}
+
+void leftFootOff()
+{
+  if (leftFootAttached) {
+    leftFoot.write(FOOT_STOP_L);
+    leftFoot.detach();
+    leftFootAttached = false;
+  }
+}
+
+// Attach / stop-and-detach BOTH feet together — used by roll mode and by
+// the obstacle/turn sequences that still want the old "both feet at once"
+// behavior. Built on top of the per-foot helpers above so the attach state
+// always stays consistent no matter which path (walk gait or these) last
+// touched a foot.
 void feetAttach()
 {
-  if (!feetAttached) {
-    leftFoot.attach(SERVO_LEFT_FOOT_PIN,  544, 2400);
-    rightFoot.attach(SERVO_RIGHT_FOOT_PIN, 544, 2400);
-    feetAttached = true;
-  }
+  rightFootOn();
+  leftFootOn();
 }
 
 void feetStop()
 {
-  if (feetAttached) {
-    leftFoot.write(FOOT_STOP_L);
-    rightFoot.write(FOOT_STOP_R);
-    delay(30);
-    leftFoot.detach();
-    rightFoot.detach();
-    feetAttached = false;
-  }
+  if (rightFootAttached) rightFoot.write(FOOT_STOP_R);
+  if (leftFootAttached)  leftFoot.write(FOOT_STOP_L);
+  if (rightFootAttached || leftFootAttached) delay(30);
+  rightFootOff();
+  leftFootOff();
 }
 
 
@@ -595,8 +633,6 @@ void rollNeutral()
 // ================================================================
 void walkForward()
 {
-  feetAttach();
-
   const int Interval     = WALK_TILT_MS;     // time to tilt one leg
   const int Overlap      = WALK_OVERLAP_MS;  // how early the next leg starts moving
   const int DriveR       = WALK_DRIVE_MS_R;  // right foot drive pulse duration
@@ -633,14 +669,16 @@ void walkForward()
   if (e <= P1) {
     leftLeg.write(map(e, 0, P1, LA0, LATR));
     rightLeg.write(RA0);
-    leftFoot.write(FOOT_STOP_L);
-    rightFoot.write(FOOT_STOP_R);
   }
   if (e >= P1 - Overlap && e <= P2) {
     leftLeg.write(LATR);
     rightLeg.write(map(e, P1 - Overlap, P2, RA0, RATR));
   }
+  // Right foot is attached exactly when its drive window opens (P2) and
+  // detached the instant it closes (P3) — it no longer sits attached
+  // (and potentially creeping) through the swing/return phases too.
   if (e > P2 && e <= P3) {
+    rightFootOn();
     long rampEnd = min((long)(P2 + WALK_DRIVE_RAMP_MS), P3);
     if (e <= rampEnd) {
       rightFoot.write(safeFootWrite(map(e, P2, rampEnd, FOOT_STOP_R, FOOT_STOP_R - RFFWRS)));
@@ -650,7 +688,7 @@ void walkForward()
   }
   // Ease both legs back to neutral over ReturnTime — no snap
   if (e > P3 && e <= P4) {
-    rightFoot.write(FOOT_STOP_R);
+    rightFootOff();
     leftLeg.write(map(e, P3, P4, LATR, LA0));
     rightLeg.write(map(e, P3, P4, RATR, RA0));
   }
@@ -660,14 +698,14 @@ void walkForward()
   if (e > P4 && e <= P5) {
     rightLeg.write(map(e, P4, P5, RA0, RATL));
     leftLeg.write(LA0);
-    leftFoot.write(FOOT_STOP_L);
-    rightFoot.write(FOOT_STOP_R);
   }
   if (e >= P5 - Overlap && e <= P6) {
     rightLeg.write(RATL);
     leftLeg.write(map(e, P5 - Overlap, P6, LA0, LATL));
   }
+  // Left foot: same idea — attach only for its own DriveL window.
   if (e > P6 && e <= P7) {
+    leftFootOn();
     long rampEnd = min((long)(P6 + WALK_DRIVE_RAMP_MS), P7);
     if (e <= rampEnd) {
       leftFoot.write(safeFootWrite(map(e, P6, rampEnd, FOOT_STOP_L, FOOT_STOP_L + LFFWRS)));
@@ -677,7 +715,7 @@ void walkForward()
   }
   // Ease both legs back to neutral over remaining time — no snap
   if (e > P7 && e <= FullCycle) {
-    leftFoot.write(FOOT_STOP_L);
+    leftFootOff();
     leftLeg.write(map(e, P7, FullCycle, LATL, LA0));
     rightLeg.write(map(e, P7, FullCycle, RATL, RA0));
   }
@@ -693,8 +731,6 @@ void walkForward()
 // ================================================================
 void walkBackward()
 {
-  feetAttach();
-
   const int Interval   = WALK_TILT_MS;
   const int Overlap    = WALK_OVERLAP_MS;
   const int DriveR     = WALK_DRIVE_MS_R;
@@ -718,14 +754,13 @@ void walkBackward()
   if (e <= P1) {
     leftLeg.write(map(e, 0, P1, LA0, LATR));
     rightLeg.write(RA0);
-    leftFoot.write(FOOT_STOP_L);
-    rightFoot.write(FOOT_STOP_R);
   }
   if (e >= P1 - Overlap && e <= P2) {
     leftLeg.write(LATR);
     rightLeg.write(map(e, P1 - Overlap, P2, RA0, RATR));
   }
   if (e > P2 && e <= P3) {
+    rightFootOn();
     long rampEnd = min((long)(P2 + WALK_DRIVE_RAMP_MS), P3);
     if (e <= rampEnd) {
       rightFoot.write(safeFootWrite(map(e, P2, rampEnd, FOOT_STOP_R, FOOT_STOP_R + RFBWRS)));  // reversed: + instead of -
@@ -734,7 +769,7 @@ void walkBackward()
     }
   }
   if (e > P3 && e <= P4) {
-    rightFoot.write(FOOT_STOP_R);
+    rightFootOff();
     leftLeg.write(map(e, P3, P4, LATR, LA0));
     rightLeg.write(map(e, P3, P4, RATR, RA0));
   }
@@ -743,14 +778,13 @@ void walkBackward()
   if (e > P4 && e <= P5) {
     rightLeg.write(map(e, P4, P5, RA0, RATL));
     leftLeg.write(LA0);
-    leftFoot.write(FOOT_STOP_L);
-    rightFoot.write(FOOT_STOP_R);
   }
   if (e >= P5 - Overlap && e <= P6) {
     rightLeg.write(RATL);
     leftLeg.write(map(e, P5 - Overlap, P6, LA0, LATL));
   }
   if (e > P6 && e <= P7) {
+    leftFootOn();
     long rampEnd = min((long)(P6 + WALK_DRIVE_RAMP_MS), P7);
     if (e <= rampEnd) {
       leftFoot.write(safeFootWrite(map(e, P6, rampEnd, FOOT_STOP_L, FOOT_STOP_L - LFBWRS)));   // reversed: - instead of +
@@ -759,7 +793,7 @@ void walkBackward()
     }
   }
   if (e > P7 && e <= FullCycle) {
-    leftFoot.write(FOOT_STOP_L);
+    leftFootOff();
     leftLeg.write(map(e, P7, FullCycle, LATL, LA0));
     rightLeg.write(map(e, P7, FullCycle, RATL, RA0));
   }
